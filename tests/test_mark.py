@@ -4,8 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 from mark import Note
-from PyQt6.QtGui import QTextCursor, QImage, QTextTable
-from PyQt6.QtCore import QMimeData, Qt
+from PyQt6.QtGui import QTextCursor, QImage, QTextTable, QMouseEvent
+from PyQt6.QtCore import QMimeData, Qt, QPoint, QPointF, QEvent, QObject
 from PyQt6.QtTest import QTest
 
 
@@ -236,6 +236,89 @@ class NoteTests(unittest.TestCase):
         self.assertEqual(table.cellAt(n.editor.textCursor()).row(), 1)
         n.editor.undo()
         self.assertEqual(table.rows(), 2)
+
+    def test_table_plus_buttons_append_and_undo(self):
+        n = self.note
+        n.set_mode('wysiwyg').show()
+        n._insert_table(2, 2)
+        n.app.processEvents()
+        table = n.editor.textCursor().currentTable()
+        row_button, column_button = n.editor._table_plus
+        self.assertTrue(row_button.isVisible())
+        self.assertTrue(column_button.isVisible())
+        QTest.mouseClick(row_button, Qt.MouseButton.LeftButton)
+        self.assertEqual(table.rows(), 4)
+        n.app.processEvents()
+        QTest.mouseClick(column_button, Qt.MouseButton.LeftButton)
+        self.assertEqual(table.columns(), 3)
+        n.editor.undo()
+        self.assertEqual(table.columns(), 2)
+        n.editor.undo()
+        self.assertEqual(table.rows(), 3)
+        n.set_mode('split')
+        n.app.processEvents()
+        self.assertFalse(row_button.isVisible())
+        self.assertFalse(column_button.isVisible())
+
+    def test_table_plus_stays_visible_during_mouse_click(self):
+        class HideWatcher(QObject):
+            hidden = False
+
+            def eventFilter(self, watched, event):
+                if event.type() == QEvent.Type.Hide:
+                    self.hidden = True
+                return False
+
+        n = self.note
+        n.set_mode('wysiwyg').show()
+        n._insert_table(2, 2)
+        n.app.processEvents()
+        table = n.editor.textCursor().currentTable()
+        for index, button in enumerate(n.editor._table_plus):
+            watcher = HideWatcher()
+            button.installEventFilter(watcher)
+            QTest.mousePress(button, Qt.MouseButton.LeftButton)
+            for _ in range(3):
+                n.editor.viewport().repaint()
+                QTest.qWait(20)
+            self.assertFalse(watcher.hidden, 'Repainting must not hide a pressed + button')
+            self.assertTrue(button.isDown())
+            QTest.mouseRelease(button, Qt.MouseButton.LeftButton)
+            n.app.processEvents()
+            self.assertEqual((table.rows(), table.columns()), (4, 2 + index))
+            button.removeEventFilter(watcher)
+
+    def test_image_drag_live_resize_and_single_undo(self):
+        n = self.note
+        n.set_mode('wysiwyg').show()
+        n.image('photo.png', width=200, height=100)
+        n.app.processEvents()
+        QTest.mouseClick(n.editor.viewport(), Qt.MouseButton.LeftButton, pos=QPoint(80, 60))
+        n.app.processEvents()
+        handle = n.editor._image_handle
+        self.assertTrue(handle.isVisible())
+        origin = handle.mapToGlobal(QPoint(7, 7))
+        QTest.mousePress(handle, Qt.MouseButton.LeftButton, pos=QPoint(7, 7))
+        for dx, dy in [(40, 20), (100, 50)]:
+            target = origin + QPoint(dx, dy)
+            event = QMouseEvent(QEvent.Type.MouseMove, QPointF(handle.mapFromGlobal(target)),
+                               QPointF(target), Qt.MouseButton.NoButton,
+                               Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+            n.app.sendEvent(handle, event)
+            n.app.processEvents()
+        rect = n.editor._selected_image_rect()
+        self.assertAlmostEqual(rect.width(), 300)
+        self.assertAlmostEqual(rect.height(), 150)
+        self.assertAlmostEqual(rect.top(), 28, delta=1)
+        QTest.mouseRelease(handle, Qt.MouseButton.LeftButton,
+                           pos=handle.mapFromGlobal(origin + QPoint(100, 50)))
+        self.assertIn('width="300"', n.markdown)
+        self.assertIn('height="150"', n.markdown)
+        n.editor.undo()
+        self.assertIn('width="200"', n.markdown)
+        self.assertIn('height="100"', n.markdown)
+        n.editor.redo()
+        self.assertIn('width="300"', n.markdown)
 
     def test_delete_only_column_leaves_surrounding_text(self):
         self.note.markdown = 'Before\n\n| Header |\n| --- |\n| Value |\n\nAfter'

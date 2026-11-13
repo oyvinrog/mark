@@ -13,12 +13,12 @@ import uuid
 from pathlib import Path
 from typing import Callable, Iterable
 
-from PyQt6.QtCore import QUrl, QBuffer, QIODevice, Qt, QMimeData
-from PyQt6.QtGui import QAction, QFont, QTextCharFormat, QTextCursor, QTextImageFormat, QImage, QPixmap, QTextDocument, QTextTable, QTextFrameFormat, QColor, QTextListFormat, QTextFormat
+from PyQt6.QtCore import QUrl, QBuffer, QIODevice, Qt, QMimeData, QRectF
+from PyQt6.QtGui import QAction, QFont, QTextCharFormat, QTextCursor, QTextImageFormat, QImage, QPixmap, QTextDocument, QTextTable, QTextFrameFormat, QColor, QTextListFormat, QTextFormat, QPainter, QPen
 from PyQt6.QtWidgets import (
     QApplication, QFileDialog, QInputDialog, QMainWindow, QMessageBox,
     QPlainTextEdit, QSplitter, QTextEdit, QToolBar, QComboBox,
-    QDialog, QDialogButtonBox, QFormLayout, QSpinBox, QLabel,
+    QDialog, QDialogButtonBox, QFormLayout, QSpinBox, QLabel, QToolButton,
 )
 
 __all__ = ['Note', 'run']
@@ -94,7 +94,129 @@ class _SourceEditor(_PasteImages, QPlainTextEdit):
     pass
 
 
+class _ImageResizeHandle(QLabel):
+    def __init__(self, editor):
+        super().__init__(editor.viewport())
+        self.editor = editor
+        self.drag = None
+        self.setFixedSize(14, 14)
+        self.setStyleSheet('background: #267bba; border: 2px solid white;')
+        self.setCursor(Qt.CursorShape.SizeFDiagCursor)
+        self.setToolTip('Drag to resize image (keeps proportions)')
+        self.setAccessibleName('Resize image by dragging')
+        self.hide()
+
+    def mousePressEvent(self, event):
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        rect = self.editor._selected_image_rect()
+        if rect is None:
+            return
+        cursor = self.editor.note._image_cursor()
+        self.drag = [event.globalPosition(), rect.width(), rect.height(), cursor, False]
+        event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self.drag is None:
+            return
+        origin, width, height, cursor, changed = self.drag
+        delta = event.globalPosition() - origin
+        # Project the pointer onto the image diagonal so both axes work.
+        scale = max(1 / width, min(10000 / width,
+            1 + (delta.x() * width + delta.y() * height) / (width * width + height * height)))
+        fmt = cursor.charFormat().toImageFormat()
+        if abs(fmt.width() - width * scale) < 0.01 and abs(fmt.height() - height * scale) < 0.01:
+            return
+        if changed:
+            cursor.joinPreviousEditBlock()
+        else:
+            cursor.beginEditBlock()
+        fmt.setWidth(width * scale)
+        fmt.setHeight(height * scale)
+        cursor.setCharFormat(fmt)
+        cursor.endEditBlock()
+        self.drag[4] = True
+        self.editor.viewport().update()
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        if self.drag is not None and event.button() == Qt.MouseButton.LeftButton:
+            self.mouseMoveEvent(event)
+            cursor = self.drag[3]
+            self.drag = None
+            self.editor.setTextCursor(cursor)
+            self.editor.setFocus()
+            event.accept()
+
+
 class _RichEditor(_PasteImages, QTextEdit):
+    def __init__(self):
+        super().__init__()
+        self._image_handle = _ImageResizeHandle(self)
+        self._table_plus = []
+        for label, operation in [('Add row at bottom', 'append_row'), ('Add column on right', 'append_column')]:
+            button = QToolButton(self.viewport())
+            button.setText('+')
+            button.setFixedSize(24, 24)
+            button.setToolTip(label)
+            button.setAccessibleName(label)
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.setStyleSheet('QToolButton { background: #e8f3fb; color: #175b8c; border: 1px solid #267bba; border-radius: 12px; font-size: 20px; } QToolButton:hover { background: #c6e4fa; }')
+            button.clicked.connect(lambda checked=False, op=operation: self.note._edit_table(op))
+            button.hide()
+            self._table_plus.append(button)
+        self.cursorPositionChanged.connect(self.viewport().update)
+        self.selectionChanged.connect(self.viewport().update)
+
+    def _selected_image_rect(self):
+        if self.isReadOnly() or self.textCursor().selectedText() != '\ufffc':
+            return None
+        cursor = self.note._image_cursor()
+        fmt = cursor.charFormat().toImageFormat()
+        image = self.note._image_data(fmt)
+        width, height = fmt.width(), fmt.height()
+        if not image.isNull():
+            width = width or (height * image.width() / image.height() if height else image.width())
+            height = height or width * image.height() / image.width()
+        width, height = width or 16, height or 16
+        cursor.setPosition(cursor.selectionStart())
+        rect = self.cursorRect(cursor)
+        block = cursor.block()
+        line = block.layout().lineForTextPosition(cursor.positionInBlock())
+        baseline = rect.top() + (line.ascent() if line.isValid() else rect.height())
+        return QRectF(rect.left(), baseline - height, width, height)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if not hasattr(self, 'note'):
+            return
+        rect = self._selected_image_rect()
+        if rect is not None:
+            painter = QPainter(self.viewport())
+            painter.setPen(QPen(QColor('#267bba'), 1))
+            painter.drawRect(rect)
+            painter.end()
+            self._image_handle.move(round(rect.right()) - 7, round(rect.bottom()) - 7)
+            self._image_handle.show()
+            self._image_handle.raise_()
+        else:
+            self._image_handle.hide()
+        table = self.textCursor().currentTable() if not self.isReadOnly() else None
+        if table is None:
+            for button in self._table_plus:
+                button.hide()
+        else:
+            bounds = self.document().documentLayout().frameBoundingRect(table)
+            bounds.translate(-self.horizontalScrollBar().value(), -self.verticalScrollBar().value())
+            positions = [(bounds.center().x() - 12, bounds.bottom() + 2),
+                         (bounds.right() + 2, bounds.center().y() - 12)]
+            for button, (x, y) in zip(self._table_plus, positions):
+                button.move(round(x), round(y))
+                # Do not hide/show an already visible button during repaint:
+                # hiding releases its native mouse grab in the middle of a click.
+                button.setVisible(self.viewport().rect().intersects(button.geometry()))
+                button.raise_()
+
     def keyPressEvent(self, event):
         cursor = self.textCursor()
         table = cursor.currentTable()
@@ -148,7 +270,7 @@ class _RichEditor(_PasteImages, QTextEdit):
         if event.button() == Qt.MouseButton.LeftButton:
             try:
                 self.setTextCursor(self.note._image_cursor(self.cursorForPosition(event.pos())))
-                self.note.window.statusBar().showMessage('Image selected — click Resize image, right-click, or double-click the image')
+                self.note.window.statusBar().showMessage('Image selected — drag the blue corner to resize, or click Resize image')
             except ValueError:
                 pass
 
@@ -627,7 +749,13 @@ class Note:
             cursor.setPosition(table.lastPosition() + 1, QTextCursor.MoveMode.KeepAnchor)
             cursor.removeSelectedText()
         else:
-            if operation == 'above':
+            if operation == 'append_row':
+                row = table.rows()
+                table.appendRows(1)
+            elif operation == 'append_column':
+                column = table.columns()
+                table.appendColumns(1)
+            elif operation == 'above':
                 table.insertRows(row, 1)
             elif operation == 'below':
                 row += 1

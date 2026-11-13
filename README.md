@@ -81,6 +81,9 @@ Callbacks run synchronously on the GUI thread; keep them short.
   format it. Undo/Redo are also available on the toolbar. Formatting controls
   insert Markdown when editing source; Ctrl+K inserts a link.
 - Insert local images with the toolbar, choosing a pixel width. For later resizing,
+  click an image in WYSIWYG and **drag the blue bottom-right corner**. The image
+  resizes live, keeps its proportions, and the whole drag can be undone in one step.
+  For an exact pixel width,
   right-click an image in preview or WYSIWYG and choose **Resize image…**.
   You can also select it and click **Resize image…** in the toolbar, or double-click it.
   Resizing keeps the image proportions. You can also edit the
@@ -95,6 +98,8 @@ Use **Tab** / **Shift+Tab** to move between cells. Tab in the last cell adds a r
 Click a cell to enable the table toolbar, or right-click it to add rows above or
 below, add columns left or right, or delete a row, column, or the whole table.
 These changes support Undo. In source mode, Insert table creates Markdown syntax.
+In WYSIWYG, the active table also has **+ buttons** at its bottom and right edges:
+click them to append a row or column immediately.
 
 Relative image paths resolve against the saved note's folder, or the working
 folder for an unsaved note. Toolbar images use absolute file URLs. Images inserted from files remain
